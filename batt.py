@@ -14,13 +14,49 @@ import posreader as batt
 tf.logging.set_verbosity(tf.logging.INFO)
 
 # Define flds
-FLDS = batt.createFlds()
 ENC_ONE_HOT = 1
 ENC_EMBEDDING = 2
 FLAGS = None
 
 
-def build_estimator(model_dir, model_type, encoding):
+def createFlds(model_type):
+    if model_type < 4:
+        flds = batt.createFlds()
+    else:
+        flds = batt2createFlds()
+    return flds
+
+
+def batt2createFlds():
+    flds = []
+    for flagix in range(0, 9):
+        for c in "wl":
+            flds.append(batt.ValueFld('IsWon' + str(flagix) + c, 1))
+            flds.append(batt.ValueFld('IsWon0' + str(flagix) + c, 1))
+            flds.append(batt.ValueFld('IsWon1' + str(flagix) + c, 1))
+
+            flds.append(batt.ValueFld('IsOppNew' + str(flagix) + c, 1))
+            flds.append(batt.ValueFld('OppMissNo' + str(flagix) + c, 4))
+            flds.append(batt.ValueFld('OppRank' + str(flagix) + c, 29))
+            flds.append(batt.ValueFld('OppRankProb' + str(flagix) + c, 1))
+
+            flds.append(batt.ValueFld('IsBotNew' + str(flagix) + c, 1))
+            flds.append(batt.ValueFld('BotMissNo' + str(flagix) + c, 4))
+            flds.append(batt.ValueFld('BotRank0' + str(flagix) + c, 29))
+            flds.append(batt.ValueFld('BotRank0Prob' + str(flagix) + c, 1))
+            flds.append(batt.ValueFld('BotRank1' + str(flagix) + c, 29))
+            flds.append(batt.ValueFld('BotRank1Prob' + str(flagix) + c, 1))
+            flds.append(batt.ValueFld('BotRank2' + str(flagix) + c, 29))
+            flds.append(batt.ValueFld('BotRank2Prob' + str(flagix) + c, 1))
+            flds.append(batt.ValueFld('BotRank3' + str(flagix) + c, 29))
+            flds.append(batt.ValueFld('BotRank3Prob' + str(flagix) + c, 1))
+            flds.append(batt.ValueFld('BotRank4' + str(flagix) + c, 29))
+            flds.append(batt.ValueFld('BotRank4Prob' + str(flagix) + c, 1))
+
+    return flds
+
+
+def build_estimator(model_dir, model_type, encoding, flds):
     """Creates a estimater
 
     Args:
@@ -32,10 +68,11 @@ def build_estimator(model_dir, model_type, encoding):
     A tensorflow DNNClassifier
     """
     features = []
-    for i, fld in enumerate(FLDS):
+    for i, fld in enumerate(flds):
         if hasattr(fld, 'values'):
             f = tf.contrib.layers.sparse_column_with_keys(
-                column_name=fld.name, keys=fld.values, dtype=tf.int64)
+                column_name=fld.name, keys=fld.values,
+                dtype=tf.int64)  ##int or string
             if encoding == ENC_ONE_HOT:
                 f = tf.contrib.layers.one_hot_column(f)
             else:
@@ -44,8 +81,11 @@ def build_estimator(model_dir, model_type, encoding):
                 f = tf.contrib.layers.embedding_column(f, dimension=d)
         else:
             scale = fld.scale
-            f = tf.contrib.layers.real_valued_column(
-                fld.name, normalizer=lambda x: x / scale)
+            if fld.scale == 1:
+                f = tf.contrib.layers.real_valued_column(fld.name)  #float32
+            else:
+                f = tf.contrib.layers.real_valued_column(
+                    fld.name, normalizer=lambda x: x / scale)  #float32
 
         features.append(f)
     hidden_units = [100, 100]
@@ -53,6 +93,8 @@ def build_estimator(model_dir, model_type, encoding):
         hidden_units = [200, 200]
     elif model_type == 3:
         hidden_units = [1000, 500, 250]
+    elif model_type == 4:
+        hidden_units = [200, 200]
 
     m = tf.contrib.learn.DNNClassifier(
         model_dir=model_dir,
@@ -61,7 +103,7 @@ def build_estimator(model_dir, model_type, encoding):
     return m, hidden_units
 
 
-def predict_fn(x):
+def predict_fn(x, flds):
     """A data feeder function for making prediction.
 
     Arg:
@@ -75,19 +117,20 @@ def predict_fn(x):
     lable = None
     feature_cols = {}
     size = x.shape[0]
-    for i, fld in enumerate(FLDS):
+    for i, fld in enumerate(flds):
         if hasattr(fld, 'values'):
             feature_cols[fld.name] = tf.SparseTensor(
                 indices=[[j, 0] for j in range(size)],
-                values=x[:, i],
+                values=x[:, i],  # must be index int64 if use one_hot
                 dense_shape=[size, 1])
         else:
             feature_cols[fld.name] = tf.constant(
-                x[:, i], dtype=tf.int64, shape=[size, 1])
+                x[:, i], dtype=tf.float32, shape=[size, 1])
+
     return feature_cols, lable
 
 
-def input_fn(batch_size, file_pathern, no_epochs):
+def input_fn(batch_size, file_pathern, no_epochs, flds):
     """A data feeder function for training and evaluation.
 
     Arg:
@@ -100,21 +143,24 @@ def input_fn(batch_size, file_pathern, no_epochs):
     feature_cols: A map of feature names and tensor.
     lable: A tensor of lables.
     """
-    defaults = [tf.constant([-1], dtype=tf.int64)] * (len(FLDS) + 1)
+    defaults = [tf.constant([-1], dtype=tf.float32)] * (len(flds) + 1)
+
     examples_op = tf.contrib.learn.read_batch_examples(
         file_pathern,
         batch_size=batch_size,
         reader=tf.TextLineReader,
         num_epochs=no_epochs,
-        parse_fn=lambda x: tf.decode_csv(x, defaults))
+        parse_fn=lambda x: tf.decode_csv(x, defaults)
+    )  ##do not think it can handle more than one type
 
-    label = examples_op[:, len(FLDS)]
+    label = tf.cast(examples_op[:, len(flds)], tf.bool)
+
     size = tf.to_int64(tf.shape(examples_op)[0])
     indices = tf.transpose(
         [tf.range(size),
          tf.zeros_like(examples_op[:, 0], dtype=tf.int64)])
     feature_cols = {}
-    for i, fld in enumerate(FLDS):
+    for i, fld in enumerate(flds):
         if hasattr(fld, 'values'):
             feature_cols[fld.name] = dense_to_sparse(examples_op[:, i],
                                                      indices, size)
@@ -138,7 +184,9 @@ def dense_to_sparse(dense_tensor, indices, size):
 
     Returns: A sparse tensor.
     """
-    values = dense_tensor
+    values = tf.cast(
+        dense_tensor,
+        tf.int64)  ## most be int64 as they are used as keys in one_hot
     shape = [size, 1]
     return tf.SparseTensor(indices=indices, values=values, dense_shape=shape)
 
@@ -160,9 +208,9 @@ def train_and_eval(model_dir, model_type, batch_size, file_pathern_learn,
     startTs = datetime.datetime.today()
     print("Start at %s" % startTs)
     print("Model directory: %s" % model_dir)
-
-    m, hidden_units = build_estimator(model_dir, model_type, encoding)
-    print("Number of fields: {}".format(len(FLDS)))
+    flds = createFlds(model_type)
+    m, hidden_units = build_estimator(model_dir, model_type, encoding, flds)
+    print("Number of fields: {}".format(len(flds)))
     print("Hidden units: {}".format(hidden_units))
     print("Batch size: {}".format(batch_size))
     if encoding == 1:
@@ -171,10 +219,11 @@ def train_and_eval(model_dir, model_type, batch_size, file_pathern_learn,
         print("Type feature encoding embedding")
 
     print("Epochs: {}".format(no_epochs))
-    m.fit(input_fn=lambda: input_fn(batch_size, file_pathern_learn, no_epochs))
+    m.fit(input_fn=
+          lambda: input_fn(batch_size, file_pathern_learn, no_epochs, flds))
     trainTs = datetime.datetime.today()
     results = m.evaluate(
-        input_fn=lambda: input_fn(batch_size, file_pathern_test, 1))
+        input_fn=lambda: input_fn(batch_size, file_pathern_test, 1, flds))
     for key in sorted(results):
         print("%s: %s" % (key, results[key]))
 
@@ -199,7 +248,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_dir",
         type=str,
-        default="./model",
+        default="./model1",
         help="Base directory for output models.")
     parser.add_argument(
         "--feature_encoding",
@@ -209,24 +258,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_type",
         type=int,
-        default=3,
-        help="Valid model types: {'1', '2','3'}.")
+        default=4,
+        help="Valid model types: {'1', '2','3','4'}.")
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=50,
+        default=400,
         help="Number of records in training steps.")
     parser.add_argument(
         "--file_pathern_learn",
         type=str,
-        default="/home/rho/BoltDb/tf/big/move.cvs.t1*",  # "./move.cvs.learn",
+        default=
+        "/home/rho/BoltDb/v2/small/out.cvs.train*",  # "./out.cvs.train",
         help="Pathern to the training data files.")
     parser.add_argument(
         "--file_pathern_cv",
         type=str,
-        default="/home/rho/BoltDb/tf/big/move.cvs.t1*",  #"./move.cvs.cv",
+        default="/home/rho/BoltDb/v2/small/out.cvs.cv*",  #"./out.cvs.cv",
         help="Pathern to the test data file(s).")
     parser.add_argument(
         "--no_epochs", type=int, default=2, help="Number of epochs")
     FLAGS, unparsed = parser.parse_known_args()
+
     tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
